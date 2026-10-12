@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0e1a">
+  <title>VeriFace · Escáner móvil</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0a0e1a;--panel:#121829;--border:#1f2945;--text:#e5e9f5;--muted:#9aa4bc;--cyan:#22d3ee;--blue:#3b82f6}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font:16px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh}
+    main{width:min(100% - 32px,520px);margin:0 auto;padding:36px 0}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:18px;padding:24px}
+    h1{font-size:24px;margin:0 0 8px}
+    p{color:var(--muted);line-height:1.55}
+    label,.field-label{display:block;font-size:13px;color:var(--muted);margin:18px 0 7px}
+    input[type=text]{width:100%;padding:12px;border:1px solid var(--border);border-radius:9px;background:#0b1020;color:var(--text);font:inherit}
+    button,.capture{display:flex;width:100%;justify-content:center;align-items:center;padding:13px 16px;margin-top:14px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(135deg,var(--cyan),var(--blue));color:white;font:600 15px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;text-align:center;cursor:pointer}
+    button:disabled,.capture.disabled{opacity:.5;cursor:not-allowed}
+    .capture{background:transparent}
+    #photoInput{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+    #status{padding:12px;border-radius:9px;background:#0b1020;border:1px solid var(--border);font-size:14px;margin-top:18px}
+    #preview{display:none;width:100%;max-height:55vh;object-fit:contain;border-radius:10px;margin-top:16px;background:#05080f}
+    .notice{font-size:12px;margin-top:18px}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <h1>VeriFace · Escáner móvil</h1>
+      <p>Conecta este teléfono al panel VeriFace y captura imágenes con la cámara trasera.</p>
+      <label for="deviceName">Nombre del teléfono</label>
+      <input id="deviceName" type="text" maxlength="60" autocomplete="off">
+      <button id="connectButton" type="button">Conectar al panel</button>
+      <label id="captureLabel" class="capture disabled" for="photoInput">Conecta primero el teléfono</label>
+      <input id="photoInput" type="file" accept="image/*" capture="environment" disabled>
+      <img id="preview" alt="Vista previa de la foto capturada">
+      <div id="status" role="status">Validando enlace de conexión...</div>
+      <p class="notice">Las fotos se envían directamente al computador que creó este enlace. No compartas el enlace con otras personas.</p>
+    </div>
+  </main>
+  <script>
+    const params=new URLSearchParams(location.search);
+    const session=params.get('session')||'';
+    const $=id=>document.getElementById(id);
+    const status=$('status');
+    const photoInput=$('photoInput');
+    const captureLabel=$('captureLabel');
+    let connected=false,heartbeatTimer=null;
+
+    function platformName(){
+      const ua=navigator.userAgent;
+      if(/Android/i.test(ua)) return 'Android';
+      if(/iPhone|iPad|iPod/i.test(ua)) return 'iOS';
+      return 'Teléfono móvil';
+    }
+    function updateConnected(value){
+      connected=value;
+      photoInput.disabled=!value;
+      captureLabel.classList.toggle('disabled',!value);
+      captureLabel.textContent=value?'Tomar foto':'Conecta primero el teléfono';
+      $('connectButton').textContent=value?'Conectado al panel':'Conectar al panel';
+      $('connectButton').disabled=value;
+    }
+    async function postJson(path,data){
+      const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+      const result=await response.json().catch(()=>({}));
+      if(!response.ok) throw new Error(result.error||`Error HTTP ${response.status}`);
+      return result;
+    }
+    async function connect(){
+      if(!session){status.textContent='El enlace no tiene un código de sesión. Vuelve al panel y crea una nueva conexión.';return;}
+      const button=$('connectButton');
+      button.disabled=true;
+      status.textContent='Conectando al panel...';
+      try{
+        const deviceName=$('deviceName').value.trim();
+        await postJson('/api/phone/connect',{session,deviceName,platform:platformName()});
+        updateConnected(true);
+        status.textContent='Teléfono conectado. Pulsa «Tomar foto» para usar el escáner.';
+        if(heartbeatTimer) clearInterval(heartbeatTimer);
+        heartbeatTimer=setInterval(async()=>{
+          try{await postJson('/api/phone/heartbeat',{session});}
+          catch(error){updateConnected(false);status.textContent=`Conexión interrumpida: ${error.message}. Vuelve a conectar.`;clearInterval(heartbeatTimer);heartbeatTimer=null;}
+        },4000);
+      }catch(error){
+        updateConnected(false);
+        button.disabled=false;
+        status.textContent=`No se pudo conectar: ${error.message}`;
+      }
+    }
+    function fileAsJpeg(file){
+      return new Promise((resolve,reject)=>{
+        const objectUrl=URL.createObjectURL(file);
+        const image=new Image();
+        image.onload=()=>{
+          URL.revokeObjectURL(objectUrl);
+          const scale=Math.min(1,1600/Math.max(image.naturalWidth,image.naturalHeight));
+          const canvas=document.createElement('canvas');
+          canvas.width=Math.max(1,Math.round(image.naturalWidth*scale));
+          canvas.height=Math.max(1,Math.round(image.naturalHeight*scale));
+          canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);
+          resolve(canvas.toDataURL('image/jpeg',0.84));
+        };
+        image.onerror=()=>{URL.revokeObjectURL(objectUrl);reject(new Error('No se pudo abrir la imagen capturada.'));};
+        image.src=objectUrl;
+      });
+    }
+    $('connectButton').addEventListener('click',connect);
+    photoInput.addEventListener('change',async()=>{
+      const file=photoInput.files&&photoInput.files[0];
+      if(!file) return;
+      if(file.size>20*1024*1024){status.textContent='La foto supera el límite de 20 MB.';photoInput.value='';return;}
+      const label=captureLabel;
+      label.textContent='Preparando y enviando foto...';
+      photoInput.disabled=true;
+      try{
+        const image=await fileAsJpeg(file);
+        $('preview').src=image;
+        $('preview').style.display='block';
+        await postJson('/api/phone/photo',{session,image,filename:file.name||'captura.jpg'});
+        status.textContent='Foto recibida por el panel. Puedes capturar otra.';
+      }catch(error){
+        status.textContent=`No se pudo enviar la foto: ${error.message}`;
+      }finally{
+        photoInput.value='';
+        photoInput.disabled=!connected;
+        label.textContent=connected?'Tomar otra foto':'Conecta primero el teléfono';
+      }
+    });
+    if(session){
+      $('deviceName').value=`${platformName()} · Escáner`;
+      $('connectButton').disabled=false;
+      status.textContent='Enlace válido. Pulsa «Conectar al panel» para iniciar.';
+    }else{
+      $('connectButton').disabled=true;
+      status.textContent='Falta el código de sesión. Vuelve al panel y crea una nueva conexión.';
+    }
+  </script>
+</body>
+</html>

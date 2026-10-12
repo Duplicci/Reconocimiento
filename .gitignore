@@ -1,0 +1,14 @@
+# Runtime database may contain biometric and personal data.
+veriface_data.sqlite3
+veriface_data.sqlite3-shm
+veriface_data.sqlite3-wal
+
+# Python artifacts and local environments.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Windows-generated files.
+Thumbs.db
+Desktop.ini
